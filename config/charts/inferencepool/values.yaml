@@ -7,6 +7,9 @@ inferenceExtension:
     pullPolicy: Always
   extProcPort: 9002
   env: []
+  # Configure the tracer service name for custom tracing spans
+  # This allows the gateway to work in different deployment contexts
+  tracerServiceName: "gateway-api-inference-extension"
   pluginsConfigFile: "default-plugins.yaml"
   # Define additional container ports
   extraContainerPorts: []
