@@ -7,6 +7,9 @@ inferenceExtension:
     pullPolicy: Always
   extProcPort: 9002
   env: []
+  # Configure the tracer service name for custom tracing spans
+  # This allows the gateway to work in different deployment contexts
+  tracerServiceName: "gateway-api-inference-extension"
   enablePprof: true # Enable pprof handlers for profiling and debugging
   modelServerMetricsPath: "/metrics"
   modelServerMetricsScheme: "http"

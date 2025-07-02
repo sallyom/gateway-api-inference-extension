@@ -14,6 +14,10 @@ spec:
     metadata:
       labels:
         {{- include "gateway-api-inference-extension.selectorLabels" . | nindent 8 }}
+      {{- with .Values.inferenceExtension.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "gateway-api-inference-extension.name" . }}
       # Conservatively, this timeout should mirror the longest grace period of the pods within the pool
@@ -72,8 +76,10 @@ spec:
             service: inference-extension
           initialDelaySeconds: 5
           periodSeconds: 10
-        {{- with .Values.inferenceExtension.env }}
         env:
+        - name: OTEL_TRACER_SERVICE_NAME
+          value: {{ .Values.inferenceExtension.tracerServiceName | quote }}
+        {{- with .Values.inferenceExtension.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         volumeMounts:
