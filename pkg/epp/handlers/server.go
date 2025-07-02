@@ -37,6 +37,7 @@ import (
 	errutil "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/util/error"
 	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/util/logging"
 	requtil "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/util/request"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/tracing"
 )
 
 const (
@@ -131,6 +132,10 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 	logger := log.FromContext(ctx)
 	loggerTrace := logger.V(logutil.TRACE)
 	loggerTrace.Info("Processing")
+
+	// Create span for the entire request processing
+	ctx, span := tracing.StartSpan(ctx, "gateway.request")
+	defer span.End()
 
 	// Create request context to share states during life time of an HTTP request.
 	// See https://github.com/envoyproxy/envoy/issues/17540.
