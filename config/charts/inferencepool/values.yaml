@@ -6,7 +6,7 @@ inferenceExtension:
     tag: v0.5.0
     pullPolicy: Always
   extProcPort: 9002
-  env: {}
+  env: []
   enablePprof: true # Enable pprof handlers for profiling and debugging
   modelServerMetricsPath: "/metrics"
   modelServerMetricsScheme: "http"
@@ -34,6 +34,11 @@ inferenceExtension:
   # Example environment variables:
   # env:
   #   KV_CACHE_SCORE_WEIGHT: "1"
+
+  # Define additional container ports
+  extraContainerPorts: []
+  # Define additional service ports
+  extraServicePorts: []
 
 inferencePool:
   targetPortNumber: 8000
