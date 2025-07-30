@@ -89,8 +89,23 @@ spec:
           {{- end }}
           initialDelaySeconds: 5
           periodSeconds: 10
-        {{- with .Values.inferenceExtension.env }}
         env:
+        {{- if .Values.tracing.enabled }}
+        - name: OTEL_TRACING_ENABLED
+          value: "true"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ .Values.tracing.otelCollectorEndpoint | quote }}
+        - name: OTEL_SAMPLING_RATE
+          value: {{ .Values.tracing.samplingRate | quote }}
+        {{- if .Values.tracing.apiToken }}
+        - name: OTEL_EXPORTER_OTLP_HEADERS
+          value: "authorization=Bearer {{ .Values.tracing.apiToken }}"
+        {{- end }}
+        {{- else }}
+        - name: OTEL_TRACING_ENABLED
+          value: "false"
+        {{- end }}
+        {{- with .Values.inferenceExtension.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         volumeMounts:

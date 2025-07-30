@@ -1,3 +1,15 @@
+# OpenTelemetry distributed tracing configuration
+# @default -- See below
+tracing:
+  # -- Enable or disable distributed tracing
+  enabled: false
+  # -- OpenTelemetry collector endpoint for exporting traces
+  otelCollectorEndpoint: "http://otel-collector:4317"
+  # -- Optional API token for trace export authentication
+  apiToken: ""
+  # -- Sampling rate for traces (0.0 to 1.0)
+  samplingRate: 0.1
+
 inferenceExtension:
   replicas: 1
   image:
