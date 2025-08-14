@@ -38,6 +38,25 @@ inferenceExtension:
   # Only the leader pod will be ready to serve traffic.
   enableLeaderElection: false
 
+  # Monitoring configuration
+  metricsPort: 9090
+  monitoring:
+    servicemonitor:
+      enabled: false
+      port: "http-metrics"
+      path: "/metrics"
+      interval: "30s"
+      scrapeTimeout: ""
+      labels: {}
+      annotations: {}
+      relabelings: []
+      metricRelabelings: []
+      namespaceSelector:
+        any: false
+        matchNames: []
+      selector:
+        matchLabels: {} # servicemonitor matchLabels will match epp service by default.
+
 inferencePool:
   targetPortNumber: 8000
   modelServerType: vllm # vllm, triton-tensorrt-llm

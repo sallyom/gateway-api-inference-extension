@@ -10,10 +10,8 @@ spec:
   targetPortNumber: {{ .Values.inferencePool.targetPortNumber }}
   selector:
     matchLabels:
-      {{- if .Values.inferencePool.modelServers.matchLabels }}
-      {{- range $key, $value := .Values.inferencePool.modelServers.matchLabels }}
-      {{ $key }}: {{ quote $value }}
-      {{- end }}
+      {{- with .Values.inferencePool.modelServers.matchLabels }}
+      {{- toYaml . | nindent 6 }}
       {{- end }}
   extensionRef:
     name: {{ include "gateway-api-inference-extension.name" . }}
