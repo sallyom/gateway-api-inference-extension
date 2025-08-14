@@ -9,9 +9,8 @@ metadata:
 spec:
   targetPortNumber: {{ .Values.inferencePool.targetPortNumber }}
   selector:
-    matchLabels:
-      {{- with .Values.inferencePool.modelServers.matchLabels }}
-      {{- toYaml . | nindent 6 }}
-      {{- end }}
+    {{- with .Values.inferencePool.modelServers.matchLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   extensionRef:
     name: {{ include "gateway-api-inference-extension.name" . }}
