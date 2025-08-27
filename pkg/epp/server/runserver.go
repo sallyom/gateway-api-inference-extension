@@ -25,6 +25,8 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
@@ -131,6 +133,19 @@ func (r *ExtProcServerRunner) SetupWithManager(ctx context.Context, mgr ctrl.Man
 // The runnable implements LeaderElectionRunnable with leader election disabled.
 func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 	return runnable.NoLeaderElection(manager.RunnableFunc(func(ctx context.Context) error {
+		// Create a span for server startup - this will always be generated
+		tracer := otel.GetTracerProvider().Tracer("gateway-api-inference-extension")
+		ctx, span := tracer.Start(ctx, "gateway.server_startup")
+		defer span.End()
+		
+		span.SetAttributes(
+			attribute.String("component", "gateway-api-inference-extension"),
+			attribute.String("operation", "grpc_server_startup"),
+			attribute.Int("grpc.port", r.GrpcPort),
+			attribute.Bool("tls.enabled", r.SecureServing),
+			attribute.Bool("health_checking.enabled", r.HealthChecking),
+		)
+		
 		backendmetrics.StartMetricsLogger(ctx, r.Datastore, r.RefreshPrometheusMetricsInterval)
 		var srv *grpc.Server
 		if r.SecureServing {
@@ -184,6 +199,7 @@ func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 		}
 
 		// Forward to the gRPC runnable.
+		span.SetAttributes(attribute.String("operation", "grpc_server_starting"))
 		return runnable.GRPCServer("ext-proc", srv, r.GrpcPort).Start(ctx)
 	}))
 }

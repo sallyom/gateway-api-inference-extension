@@ -147,7 +147,11 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 	defer span.End()
 
 	// Add component attribute to distinguish this part of the system
-	span.SetAttributes(attribute.String("component", "gateway-api-inference-extension"))
+	span.SetAttributes(
+		attribute.String("component", "gateway-api-inference-extension"),
+		attribute.String("operation", "process_streaming_request"),
+		attribute.String("service.name", tracerServiceName),
+	)
 
 	// Create request context to share states during life time of an HTTP request.
 	// See https://github.com/envoyproxy/envoy/issues/17540.
@@ -216,9 +220,19 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			if path := requtil.ExtractHeaderValue(v, ":path"); len(path) > 0 {
 				span.SetAttributes(attribute.String("http.route", path))
 			}
-			span.SetAttributes(attribute.String("operation", "process_request"))
+			span.SetAttributes(
+				attribute.String("operation", "process_request_headers"),
+				attribute.String("processing.stage", "headers"),
+			)
 
+			// Create a sub-span for header processing
+			_, headerSpan := tracer.Start(ctx, "gateway.process_headers")
+			headerSpan.SetAttributes(
+				attribute.String("component", "gateway-api-inference-extension"),
+				attribute.String("operation", "handle_request_headers"),
+			)
 			err = s.HandleRequestHeaders(ctx, reqCtx, v)
+			headerSpan.End()
 
 		case *extProcPb.ProcessingRequest_RequestBody:
 			loggerTrace.Info("Incoming body chunk", "EoS", v.RequestBody.EndOfStream)
@@ -228,17 +242,39 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			// Message is buffered, we can read and decode.
 			if v.RequestBody.EndOfStream {
 				loggerTrace.Info("decoding")
+				
+				// Create span for body processing
+				_, bodySpan := tracer.Start(ctx, "gateway.process_body")
+				bodySpan.SetAttributes(
+					attribute.String("component", "gateway-api-inference-extension"),
+					attribute.String("operation", "decode_request_body"),
+					attribute.Int("body.size_bytes", len(body)),
+				)
+				
 				err = json.Unmarshal(body, &reqCtx.Request.Body)
 				if err != nil {
+					bodySpan.SetAttributes(attribute.String("error", "unmarshal_failed"))
+					bodySpan.End()
 					logger.V(logutil.DEFAULT).Error(err, "Error unmarshaling request body")
 					err = errutil.Error{Code: errutil.BadRequest, Msg: "Error unmarshaling request body: " + string(body)}
 					break
 				}
+				bodySpan.End()
 
 				// Body stream complete. Allocate empty slice for response to use.
 				body = []byte{}
 
+				// Create span for director handling
+				_, directorSpan := tracer.Start(ctx, "gateway.director_handle_request")
+				directorSpan.SetAttributes(
+					attribute.String("component", "gateway-api-inference-extension"),
+					attribute.String("operation", "director_handle_request"),
+				)
 				reqCtx, err = s.director.HandleRequest(ctx, reqCtx)
+				if err != nil {
+					directorSpan.SetAttributes(attribute.String("error", "director_handle_failed"))
+				}
+				directorSpan.End()
 				if err != nil {
 					logger.V(logutil.DEFAULT).Error(err, "Error handling request")
 					break
@@ -260,17 +296,27 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 		case *extProcPb.ProcessingRequest_RequestTrailers:
 			// This is currently unused.
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
+			// Create span for response header processing
+			_, respHeaderSpan := tracer.Start(ctx, "gateway.process_response_headers")
+			respHeaderSpan.SetAttributes(
+				attribute.String("component", "gateway-api-inference-extension"),
+				attribute.String("operation", "handle_response_headers"),
+			)
+			
 			for _, header := range v.ResponseHeaders.Headers.GetHeaders() {
 				value := string(header.RawValue)
 
 				loggerTrace.Info("header", "key", header.Key, "value", value)
 				if header.Key == "status" {
 					span.SetAttributes(attribute.String("http.response.status_code", value))
+					respHeaderSpan.SetAttributes(attribute.String("http.response.status_code", value))
 					if value != "200" {
 						reqCtx.ResponseStatusCode = errutil.ModelServerError
+						respHeaderSpan.SetAttributes(attribute.String("error", "non_200_status"))
 					}
 				} else if header.Key == "content-type" && strings.Contains(value, "text/event-stream") {
 					reqCtx.modelServerStreaming = true
+					respHeaderSpan.SetAttributes(attribute.Bool("llm_d.response.streaming", true))
 					loggerTrace.Info("model server is streaming response")
 				}
 			}
@@ -279,44 +325,69 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			var responseErr error
 			reqCtx, responseErr = s.HandleResponseHeaders(ctx, reqCtx, v)
 			if responseErr != nil {
+				respHeaderSpan.SetAttributes(attribute.String("error", "handle_response_headers_failed"))
 				logger.V(logutil.DEFAULT).Error(responseErr, "Failed to process response headers", "request", req)
 			}
+			respHeaderSpan.End()
 			reqCtx.respHeaderResp = s.generateResponseHeaderResponse(reqCtx)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
+			// Create span for response body processing
+			_, respBodySpan := tracer.Start(ctx, "gateway.process_response_body")
+			respBodySpan.SetAttributes(
+				attribute.String("component", "gateway-api-inference-extension"),
+				attribute.String("operation", "handle_response_body"),
+				attribute.Int("response.body.size_bytes", len(v.ResponseBody.Body)),
+				attribute.Bool("response.end_of_stream", v.ResponseBody.EndOfStream),
+			)
+			
 			if reqCtx.modelServerStreaming {
 				// Currently we punt on response parsing if the modelServer is streaming, and we just passthrough.
+				respBodySpan.SetAttributes(attribute.Bool("llm_d.response.streaming", true))
 
 				responseText := string(v.ResponseBody.Body)
 				s.HandleResponseBodyModelStreaming(ctx, reqCtx, responseText)
 				if v.ResponseBody.EndOfStream {
 					loggerTrace.Info("stream completed")
+					respBodySpan.SetAttributes(attribute.String("operation", "stream_completed"))
 
 					reqCtx.ResponseCompleteTimestamp = time.Now()
 					metrics.RecordRequestLatencies(ctx, reqCtx.Model, reqCtx.ResolvedTargetModel, reqCtx.RequestReceivedTimestamp, reqCtx.ResponseCompleteTimestamp)
 					metrics.RecordResponseSizes(reqCtx.Model, reqCtx.ResolvedTargetModel, reqCtx.ResponseSize)
+					
+					// Add timing attributes to span
+					latency := reqCtx.ResponseCompleteTimestamp.Sub(reqCtx.RequestReceivedTimestamp)
+					respBodySpan.SetAttributes(
+						attribute.Int64("llm_d.request.latency_ms", latency.Milliseconds()),
+						attribute.Int("llm_d.response.size_bytes", reqCtx.ResponseSize),
+					)
 				}
 
 				reqCtx.respBodyResp = generateResponseBodyResponses(v.ResponseBody.Body, v.ResponseBody.EndOfStream)
+				respBodySpan.End()
 			} else {
 				body = append(body, v.ResponseBody.Body...)
 
 				// Message is buffered, we can read and decode.
 				if v.ResponseBody.EndOfStream {
 					loggerTrace.Info("stream completed")
+					respBodySpan.SetAttributes(attribute.Bool("llm_d.response.streaming", false))
 					// Don't send a 500 on a response error. Just let the message passthrough and log our error for debugging purposes.
 					// We assume the body is valid JSON, err messages are not guaranteed to be json, and so capturing and sending a 500 obfuscates the response message.
 					// Using the standard 'err' var will send an immediate error response back to the caller.
 					var responseErr error
 					responseErr = json.Unmarshal(body, &responseBody)
 					if responseErr != nil {
+						respBodySpan.SetAttributes(attribute.String("error", "unmarshal_response_failed"))
 						logger.V(logutil.DEFAULT).Error(responseErr, "Error unmarshaling request body", "body", string(body))
 						reqCtx.respBodyResp = generateResponseBodyResponses(body, true)
+						respBodySpan.End()
 						break
 					}
 
 					reqCtx, responseErr = s.HandleResponseBody(ctx, reqCtx, responseBody)
 					if responseErr != nil {
+						respBodySpan.SetAttributes(attribute.String("error", "handle_response_body_failed"))
 						logger.V(logutil.DEFAULT).Error(responseErr, "Failed to process response body", "request", req)
 					} else if reqCtx.ResponseComplete {
 						reqCtx.ResponseCompleteTimestamp = time.Now()
@@ -324,7 +395,19 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 						metrics.RecordResponseSizes(reqCtx.Model, reqCtx.ResolvedTargetModel, reqCtx.ResponseSize)
 						metrics.RecordInputTokens(reqCtx.Model, reqCtx.ResolvedTargetModel, reqCtx.Usage.PromptTokens)
 						metrics.RecordOutputTokens(reqCtx.Model, reqCtx.ResolvedTargetModel, reqCtx.Usage.CompletionTokens)
+						
+						// Add GenAI semantic convention attributes per proposal
+						latency := reqCtx.ResponseCompleteTimestamp.Sub(reqCtx.RequestReceivedTimestamp)
+						respBodySpan.SetAttributes(
+							attribute.String("gen_ai.request.model", reqCtx.Model),
+							attribute.Int("gen_ai.usage.input_tokens", reqCtx.Usage.PromptTokens),
+							attribute.Int("gen_ai.usage.output_tokens", reqCtx.Usage.CompletionTokens),
+							attribute.String("operation.outcome", "success"),
+							attribute.Int64("llm_d.request.latency_ms", latency.Milliseconds()),
+							attribute.Int("llm_d.response.size_bytes", reqCtx.ResponseSize),
+						)
 					}
+					respBodySpan.End()
 				}
 			}
 		case *extProcPb.ProcessingRequest_ResponseTrailers:
