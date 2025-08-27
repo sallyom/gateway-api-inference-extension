@@ -24,6 +24,7 @@ import (
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
@@ -149,10 +150,16 @@ func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 			creds := credentials.NewTLS(&tls.Config{
 				Certificates: []tls.Certificate{cert},
 			})
-			// Init the server.
-			srv = grpc.NewServer(grpc.Creds(creds))
+			// Init the server with TLS and OpenTelemetry instrumentation.
+			srv = grpc.NewServer(
+				grpc.Creds(creds),
+				grpc.StatsHandler(otelgrpc.NewServerHandler()),
+			)
 		} else {
-			srv = grpc.NewServer()
+			// Init the server with OpenTelemetry instrumentation.
+			srv = grpc.NewServer(
+				grpc.StatsHandler(otelgrpc.NewServerHandler()),
+			)
 		}
 
 		extProcServer := handlers.NewStreamingServer(
