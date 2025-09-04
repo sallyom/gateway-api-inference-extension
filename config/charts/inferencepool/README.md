@@ -79,6 +79,30 @@ $ helm install triton-llama3-8b-instruct \
   oci://us-central1-docker.pkg.dev/k8s-staging-images/gateway-api-inference-extension/charts/inferencepool --version v0
 ```
 
+### Install with Monitoring
+
+To enable metrics collection and monitoring for the EndpointPicker, you can configure Prometheus ServiceMonitor creation:
+
+```yaml
+inferenceExtension:
+  monitoring:
+    interval: "10s"
+    prometheus:
+      enabled: true
+    secret:
+      name: inference-gateway-sa-metrics-reader-secret
+```
+
+**Note:** Prometheus monitoring requires the Prometheus Operator and ServiceMonitor CRD to be installed in the cluster.
+
+For GKE environments, monitoring is automatically configured when `provider.name` is set to `gke`.
+
+Then apply it with:
+
+```txt
+helm install vllm-llama3-8b-instruct ./config/charts/inferencepool -f values.yaml
+```
+
 ## Uninstall
 
 Run the following command to uninstall the chart:
@@ -106,6 +130,9 @@ The following table list the configurable parameters of the chart.
 | `inferenceExtension.extraContainerPorts`    | List of additional container ports to expose. Defaults to `[]`.                                                       |
 | `inferenceExtension.extraServicePorts`      | List of additional service ports to expose. Defaults to `[]`.                                                         |
 | `inferenceExtension.logVerbosity`           | Logging verbosity level for the endpoint picker. Defaults to `"3"`.                                                   |
+| `inferenceExtension.monitoring.interval`   | Metrics scraping interval for monitoring. Defaults to `10s`.                                                           |
+| `inferenceExtension.monitoring.secret.name` | Name of the service account token secret for metrics authentication. Defaults to `inference-gateway-sa-metrics-reader-secret`. |
+| `inferenceExtension.monitoring.prometheus.enabled` | Enable Prometheus ServiceMonitor creation for EPP metrics collection. Defaults to `false`.                      |
 | `provider.name`                             | Name of the Inference Gateway implementation being used. Possible values: `gke`. Defaults to `none`.                   |
 
 ## Notes
