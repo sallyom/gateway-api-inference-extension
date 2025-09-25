@@ -27,6 +27,8 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -135,6 +137,11 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 	loggerTrace := logger.V(logutil.TRACE)
 	loggerTrace.Info("Processing")
 
+	// Create span for the entire request processing
+	tracer := otel.GetTracerProvider().Tracer("gateway-api-inference-extension")
+	ctx, span := tracer.Start(ctx, "llm_d.gateway.request")
+	defer span.End()
+
 	// Create request context to share states during life time of an HTTP request.
 	// See https://github.com/envoyproxy/envoy/issues/17540.
 	reqCtx := &RequestContext{
@@ -198,6 +205,14 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			loggerTrace = logger.V(logutil.TRACE)
 			ctx = log.IntoContext(ctx, logger)
 
+			// Add HTTP method and route for request classification and performance analysis
+			if method := requtil.ExtractHeaderValue(v, ":method"); len(method) > 0 {
+				span.SetAttributes(attribute.String("http.request.method", method))
+			}
+			if path := requtil.ExtractHeaderValue(v, ":path"); len(path) > 0 {
+				span.SetAttributes(attribute.String("http.route", path))
+			}
+
 			err = s.HandleRequestHeaders(reqCtx, v)
 		case *extProcPb.ProcessingRequest_RequestBody:
 			loggerTrace.Info("Incoming body chunk", "EoS", v.RequestBody.EndOfStream)
@@ -246,8 +261,11 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 				value := string(header.RawValue)
 
 				loggerTrace.Info("header", "key", header.Key, "value", value)
-				if header.Key == "status" && value != "200" {
-					reqCtx.ResponseStatusCode = errutil.ModelServerError
+				if header.Key == "status" {
+					span.SetAttributes(attribute.String("http.response.status_code", value))
+					if value != "200" {
+						reqCtx.ResponseStatusCode = errutil.ModelServerError
+					}
 				} else if header.Key == "content-type" && strings.Contains(value, "text/event-stream") {
 					reqCtx.modelServerStreaming = true
 					loggerTrace.Info("model server is streaming response")
