@@ -114,7 +114,7 @@ kubectl apply -f https://github.com/kubernetes-sigs/gateway-api-inference-extens
    Set the chart version and then select a tab to follow the provider-specific instructions.
 
    ```bash
-   export IGW_CHART_VERSION=v1.0.2
+   export IGW_CHART_VERSION=v1.1.0-rc.1
    ```
 
 --8<-- "site-src/_includes/epp.md"
