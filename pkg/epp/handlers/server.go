@@ -29,6 +29,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -212,6 +213,10 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			if path := requtil.ExtractHeaderValue(v, ":path"); len(path) > 0 {
 				span.SetAttributes(attribute.String("http.route", path))
 			}
+
+			// Inject trace context into headers for propagation to downstream services (e.g., vLLM)
+			propagator := propagation.TraceContext{}
+			propagator.Inject(ctx, propagation.MapCarrier(reqCtx.Request.Headers))
 
 			err = s.HandleRequestHeaders(reqCtx, v)
 		case *extProcPb.ProcessingRequest_RequestBody:
