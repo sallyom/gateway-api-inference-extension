@@ -26,6 +26,10 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
@@ -92,6 +96,13 @@ type Director struct {
 // HandleRequest orchestrates the request lifecycle.
 // It always returns the requestContext even in the error case, as the request context is used in error handling.
 func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestContext) (*handlers.RequestContext, error) {
+	// Start tracing span for director
+	tracer := otel.Tracer("gateway-api-inference-extension")
+	ctx, span := tracer.Start(ctx, "gateway.director.handle_request",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	defer span.End()
+
 	logger := log.FromContext(ctx)
 
 	// Parse Request, Resolve Target Models, and Determine Parameters
@@ -100,6 +111,8 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	reqCtx.IncomingModelName, ok = requestBodyMap["model"].(string)
 
 	if !ok {
+		span.RecordError(errutil.Error{Code: errutil.BadRequest, Msg: "model not found in request body"})
+		span.SetStatus(codes.Error, "model not found in request body")
 		return reqCtx, errutil.Error{Code: errutil.BadRequest, Msg: "model not found in request body"}
 	}
 	if reqCtx.TargetModelName == "" {
@@ -142,17 +155,34 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	// Get candidate pods for scheduling
 	candidatePods := d.getCandidatePodsForScheduling(ctx, reqCtx.Request.Metadata)
 	if len(candidatePods) == 0 {
-		return reqCtx, errutil.Error{Code: errutil.ServiceUnavailable, Msg: "failed to find candidate pods for serving the request"}
-	}
-
-	if err := d.admissionController.Admit(ctx, reqCtx, candidatePods, *infObjective.Spec.Priority); err != nil {
-		logger.V(logutil.DEFAULT).Info("Request rejected by admission control", "error", err)
+		err := errutil.Error{Code: errutil.ServiceUnavailable, Msg: "failed to find candidate pods for serving the request"}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.SetAttributes(attribute.Int("gateway.admission.candidate_pods", 0))
 		return reqCtx, err
 	}
 
+	span.SetAttributes(
+		attribute.Int("gateway.admission.candidate_pods", len(candidatePods)),
+		attribute.Int("gateway.admission.priority", *infObjective.Spec.Priority),
+	)
+
+	if err := d.admissionController.Admit(ctx, reqCtx, candidatePods, *infObjective.Spec.Priority); err != nil {
+		logger.V(logutil.DEFAULT).Info("Request rejected by admission control", "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "admission rejected")
+		span.SetAttributes(attribute.String("gateway.admission.result", "rejected"))
+		return reqCtx, err
+	}
+
+	span.SetAttributes(attribute.String("gateway.admission.result", "admitted"))
+
 	result, err := d.scheduler.Schedule(ctx, reqCtx.SchedulingRequest, d.toSchedulerPodMetrics(candidatePods))
 	if err != nil {
-		return reqCtx, errutil.Error{Code: errutil.InferencePoolResourceExhausted, Msg: fmt.Errorf("failed to find target pod: %w", err).Error()}
+		schedErr := errutil.Error{Code: errutil.InferencePoolResourceExhausted, Msg: fmt.Errorf("failed to find target pod: %w", err).Error()}
+		span.RecordError(schedErr)
+		span.SetStatus(codes.Error, schedErr.Error())
+		return reqCtx, schedErr
 	}
 
 	// Prepare Request (Populates RequestContext and call PreRequest plugins)
@@ -160,9 +190,20 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	// Invoke PreRequest registered plugins.
 	reqCtx, err = d.prepareRequest(ctx, reqCtx, result)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return reqCtx, err
 	}
 
+	// Add final attributes
+	if reqCtx.TargetPod != nil {
+		span.SetAttributes(
+			attribute.String("gateway.target_pod.name", reqCtx.TargetPod.GetName()),
+			attribute.String("gateway.target_endpoint", reqCtx.TargetEndpoint),
+		)
+	}
+
+	span.SetStatus(codes.Ok, "")
 	return reqCtx, nil
 }
 

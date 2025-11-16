@@ -27,6 +27,10 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -131,6 +135,14 @@ const (
 
 func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	ctx := srv.Context()
+
+	// Start tracing span for gateway request
+	tracer := otel.Tracer("gateway-api-inference-extension")
+	ctx, span := tracer.Start(ctx, "gateway.request",
+		oteltrace.WithSpanKind(oteltrace.SpanKindServer),
+	)
+	defer span.End()
+
 	logger := log.FromContext(ctx)
 	loggerTrace := logger.V(logutil.TRACE)
 	loggerTrace.Info("Processing")
@@ -236,6 +248,19 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 				reqCtx.reqHeaderResp = s.generateRequestHeaderResponse(reqCtx)
 				reqCtx.reqBodyResp = s.generateRequestBodyResponses(requestBodyBytes)
 
+				// Add span attributes now that we have model information
+				span.SetAttributes(
+					attribute.String("gen_ai.request.model", reqCtx.IncomingModelName),
+					attribute.String("gateway.target_model", reqCtx.TargetModelName),
+					attribute.Int("gateway.request.size_bytes", reqCtx.RequestSize),
+				)
+				if reqCtx.TargetPod != nil {
+					span.SetAttributes(
+						attribute.String("gateway.target_pod.name", reqCtx.TargetPod.GetName()),
+						attribute.String("gateway.target_pod.ip", reqCtx.TargetPod.GetIPAddress()),
+					)
+				}
+
 				metrics.RecordRequestCounter(reqCtx.IncomingModelName, reqCtx.TargetModelName)
 				metrics.RecordRequestSizes(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestSize)
 			}
@@ -254,6 +279,9 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 				}
 			}
 			reqCtx.RequestState = ResponseReceived
+
+			// Add streaming attribute
+			span.SetAttributes(attribute.Bool("gateway.response.streaming", reqCtx.modelServerStreaming))
 
 			var responseErr error
 			reqCtx, responseErr = s.HandleResponseHeaders(ctx, reqCtx, v)
@@ -279,6 +307,13 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 					metrics.RecordRequestLatencies(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestReceivedTimestamp, reqCtx.ResponseCompleteTimestamp)
 					metrics.RecordResponseSizes(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.ResponseSize)
 					metrics.RecordNormalizedTimePerOutputToken(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestReceivedTimestamp, reqCtx.ResponseCompleteTimestamp, reqCtx.Usage.CompletionTokens)
+
+					// Add final span attributes for streaming response
+					span.SetAttributes(
+						attribute.Int("gateway.response.size_bytes", reqCtx.ResponseSize),
+						attribute.Int("gen_ai.usage.completion_tokens", reqCtx.Usage.CompletionTokens),
+					)
+					span.SetStatus(otelcodes.Ok, "")
 				}
 
 				reqCtx.respBodyResp = generateResponseBodyResponses(v.ResponseBody.Body, v.ResponseBody.EndOfStream)
@@ -321,6 +356,15 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 							cachedToken = reqCtx.Usage.PromptTokenDetails.CachedTokens
 						}
 						metrics.RecordPromptCachedTokens(reqCtx.IncomingModelName, reqCtx.TargetModelName, cachedToken)
+
+						// Add final span attributes for non-streaming response
+						span.SetAttributes(
+							attribute.Int("gateway.response.size_bytes", reqCtx.ResponseSize),
+							attribute.Int("gen_ai.usage.prompt_tokens", reqCtx.Usage.PromptTokens),
+							attribute.Int("gen_ai.usage.completion_tokens", reqCtx.Usage.CompletionTokens),
+							attribute.Int("gen_ai.usage.cached_tokens", cachedToken),
+						)
+						span.SetStatus(otelcodes.Ok, "")
 					}
 				}
 			}
@@ -330,6 +374,9 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 
 		// Handle the err and fire an immediate response.
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(otelcodes.Error, err.Error())
+
 			if logger.V(logutil.DEBUG).Enabled() {
 				logger.V(logutil.DEBUG).Error(err, "Failed to process request", "request", req)
 			} else {
