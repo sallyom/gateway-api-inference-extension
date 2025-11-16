@@ -22,6 +22,9 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/metrics"
@@ -45,12 +48,24 @@ type Scheduler struct {
 
 // Schedule finds the target pod based on metrics and the requested lora adapter.
 func (s *Scheduler) Schedule(ctx context.Context, request *types.LLMRequest, candidatePods []types.Pod) (*types.SchedulingResult, error) {
+	tracer := otel.Tracer("gateway-api-inference-extension")
+	ctx, span := tracer.Start(ctx, "gateway.scheduler.schedule",
+		oteltrace.WithSpanKind(oteltrace.SpanKindInternal),
+	)
+	defer span.End()
+
 	loggerVerbose := log.FromContext(ctx).V(logutil.VERBOSE)
 
 	scheduleStart := time.Now()
 	defer func() {
 		metrics.RecordSchedulerE2ELatency(time.Since(scheduleStart))
 	}()
+
+	// Add span attributes for scheduling context
+	span.SetAttributes(
+		attribute.Int("gateway.scheduler.candidate_pods", len(candidatePods)),
+		attribute.String("gateway.request.id", request.RequestId),
+	)
 
 	profileRunResults := map[string]*types.ProfileRunResult{}
 	cycleState := types.NewCycleState()
@@ -88,6 +103,19 @@ func (s *Scheduler) Schedule(ctx context.Context, request *types.LLMRequest, can
 	result, err := s.profileHandler.ProcessResults(ctx, cycleState, request, profileRunResults)
 	metrics.RecordPluginProcessingLatency(framework.ProcessProfilesResultsExtensionPoint, s.profileHandler.TypedName().Type, s.profileHandler.TypedName().Name, time.Since(before))
 	loggerVerbose.Info("Completed running profile handler ProcessResults successfully", "plugin", s.profileHandler.TypedName())
+
+	// Add scheduling result attributes to span
+	if result != nil && result.TargetPod != nil {
+		span.SetAttributes(
+			attribute.String("gateway.scheduler.result", "scheduled"),
+			attribute.String("gateway.target_pod.name", result.TargetPod.GetName()),
+			attribute.String("gateway.target_pod.namespace", result.TargetPod.GetNamespace()),
+		)
+	} else if err != nil {
+		span.SetAttributes(
+			attribute.String("gateway.scheduler.result", "failed"),
+		)
+	}
 
 	return result, err
 }
