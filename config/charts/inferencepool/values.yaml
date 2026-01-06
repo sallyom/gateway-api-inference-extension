@@ -2,8 +2,8 @@ inferenceExtension:
   replicas: 1
   image:
     name: epp
-    hub: us-central1-docker.pkg.dev/k8s-staging-images/gateway-api-inference-extension
-    tag: main
+    hub: registry.k8s.io/gateway-api-inference-extension
+    tag: v1.3.0-rc.1
     pullPolicy: Always
   extProcPort: 9002
   env: []
@@ -76,7 +76,7 @@ inferenceExtension:
       image:
         hub: path/to/your/docker/repo # NOTE: Update with your Docker repository path for sidecars
         name: latencypredictor-training-server
-        tag: latest
+        tag: v1.3.0-rc.1
         pullPolicy: Always
       port: 8000
       resources:
@@ -117,7 +117,7 @@ inferenceExtension:
       image:
         hub: path/to/your/docker/repo # NOTE: Update with your Docker repository path for sidecars
         name: latencypredictor-prediction-server
-        tag: latest
+        tag: v1.3.0-rc.1
         pullPolicy: Always
       resources:
         requests:
