@@ -23,8 +23,6 @@ import (
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/metadata"
@@ -143,19 +141,6 @@ func (s *StreamingServer) generateHeaders(ctx context.Context, reqCtx *RequestCo
 			Header: &configPb.HeaderValue{
 				Key:      "Content-Length",
 				RawValue: []byte(strconv.Itoa(reqCtx.RequestSize)),
-			},
-		})
-	}
-
-	// Inject trace context headers for propagation to downstream services
-	traceHeaders := make(map[string]string)
-	propagator := otel.GetTextMapPropagator()
-	propagator.Inject(ctx, propagation.MapCarrier(traceHeaders))
-	for key, value := range traceHeaders {
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      key,
-				RawValue: []byte(value),
 			},
 		})
 	}
